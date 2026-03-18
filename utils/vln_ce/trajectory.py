@@ -35,6 +35,8 @@ class VLN_CE_Traj(Traj):
         "relative_goal_frame_id.60cm_30deg",
     ]
 
+    REASON_COL = "125cm_0deg_reason"
+
     @property
     def metadata(self) -> dict:
         return {
@@ -46,13 +48,13 @@ class VLN_CE_Traj(Traj):
         self.images = images
         self.task = task
         self.task_idx = task_idx
-        
+
         # Read parquet
         self.df = pd.read_parquet(self.parquet_path)
 
         assert len(self.df) == len(self.images), \
             f"Length mismatch between parquet {len(self.df)} and images {len(self.images)} in {self.parquet_path}"
-        
+
         self.length = len(self.df)
 
     def _process_traj(self):
@@ -60,7 +62,7 @@ class VLN_CE_Traj(Traj):
         # Ensure it's a stacked numpy array [N, 4, 4]
         # df["pose.125cm_0deg"] usually contains arrays/lists
         pose_col = self.df["pose.125cm_0deg"].to_numpy()
-        T_w_c = np.stack(pose_col)
+        T_w_c = np.array([np.stack(p) for p in pose_col])
         
         # Calculate Body Poses
         T_w_b = T_w_c @ self.T_c_b
@@ -152,12 +154,17 @@ class VLN_CE_Traj(Traj):
     
     def __iter__(self) -> Iterable[tuple[dict, str]]:
         self._process_traj()
+        has_reason = self.REASON_COL in self.df.columns
         for i in range(self.length):
+            reason = str(self.df.iloc[i][self.REASON_COL]) if has_reason else ""
+            if pd.isna(reason):
+                reason = ""
             frame = {
                 "annotation.human.action.task_description": np.array([self.task_idx], dtype=np.int32),
                 "observation.state": self.poses_body[i],
                 "video.ego_view": np.array(Image.open(self.images[i]).convert("RGB")),
-                "action": np.concatenate([self.action_deltas[i], self.action_goals[i]]).astype(np.float32)
+                "action": np.concatenate([self.action_deltas[i], self.action_goals[i]]).astype(np.float32),
+                "extra.cot": reason,
             }
             yield frame, self.task
 
@@ -202,6 +209,12 @@ class VLN_CE_Trajectories(Trajectories):
             "names": {
                 "axes": ["x", "y", "z", "yaw", "farthest_x", "farthest_y", "farthest_z", "farthest_yaw"],
             },
+        },
+        # Per-frame chain-of-thought reasoning from CoT annotations.
+        "extra.cot": {
+            "dtype": "string",
+            "shape": (1,),
+            "names": None,
         },
     }
 
